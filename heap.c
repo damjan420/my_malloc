@@ -1,10 +1,11 @@
 #include "heap_internal.h"
+#include <stdio.h>
 
 void* my_mmap(void *addr, unsigned long len, int prot, int flags, int fd, long offest) {
     void *ptr;
     register int r10_val __asm__("r10") = flags;
-    register int r8_val __asm__("r8") = fd;
-    register int r9_val __asm__("r9") = offest;
+    register int r8_val  __asm__("r8") = fd;
+    register int r9_val  __asm__("r9") = offest;
     __asm__ __volatile__ (
         "syscall\n\t"
         :"=a"(ptr)
@@ -64,17 +65,15 @@ spinlock small_locks[NSMALL] = {0};
 spinlock mid_locks[NMID]     = {0};
 
 
-static __thread thread_cache tcache_internal;
+static __thread thread_cache* tcache = &((thread_cache){0});
 
-#define tcache (&tcache_internal)
-
-object_metadata* carve_arena(void* arena,long arena_size, long obj_size) {
+object_metadata* carve_arena(void* arena, unsigned long arena_size, unsigned long obj_size) {
     long metadata_stride =  sizeof(object_metadata) + obj_size;
     object_metadata* head = NULL;
-    for(int i = 0; i < arena_size; i += metadata_stride) {
+    for(unsigned long i = 0; i  < arena_size - metadata_stride; i += metadata_stride) {
         object_metadata* obj = (object_metadata*)((char*)(arena) +i);
         
-        obj->size = obj_size;
+        obj->size = obj_size; 
         obj->status = FREE;
         if(!head) {
             head = obj;
@@ -83,7 +82,7 @@ object_metadata* carve_arena(void* arena,long arena_size, long obj_size) {
         }
         else {
             obj->prev = (object_metadata*)((char*)(arena) + i - metadata_stride);
-            if(i + metadata_stride >= arena_size) {
+            if(i + metadata_stride >= arena_size - metadata_stride) {
                 obj->next = NULL;
             }else {
                 obj->next = (object_metadata*)((char*)(arena) + i + metadata_stride);
@@ -134,7 +133,6 @@ void* my_malloc(unsigned long size) {
         // Check the thread cache first (no need for a spinlock)
         if(tcache->tiny_bins[idx]) {
             object_metadata* sob = tcache->tiny_bins[idx];
-
             sob->status = IN_USE;
             tcache->tiny_bins[idx] = sob->next;
 
@@ -445,9 +443,14 @@ void* my_calloc(unsigned long nmemb, unsigned long size) {
     if(obj->size > MY_MMAP_TRESHOLD) return ptr;
 
     //2. Zero any other objects
-    for(unsigned long i = 0; i < total_size; i++) {
-        ((char*)ptr)[i] = 0;
-    }
+    unsigned long qwords = total_size / 8;
+    __asm__ __volatile__(
+        "cld\n\t"
+        "rep stosq\n\t"
+        : 
+        : "a"(0) ,"D"(ptr), "c" (qwords)
+        :
+    );
     return ptr;
 }
 
@@ -461,6 +464,7 @@ void* my_realloc(void* ptr, unsigned long new_size) {
     }
     new_size = ALIGN16(new_size);
     object_metadata* obj = get_object_ptr(ptr);
+    
     if(obj->size > MY_MMAP_TRESHOLD) {
         object_metadata* new_obj = my_mremap(obj, sizeof(object_metadata) + obj->size, sizeof(object_metadata) + new_size, MY_MREMAP_MAYMOVE);
 
@@ -472,18 +476,22 @@ void* my_realloc(void* ptr, unsigned long new_size) {
         new_obj->status = IN_USE;
         return (void*)(obj + 1);
     }
+
     if(obj->size >= new_size) {
         return ptr;
     }
     void* new_ptr = my_malloc(new_size);
-    for(unsigned long i = 0; i < obj->size; i++) {
-        ((char*)new_ptr)[i] = ((char*)ptr)[i];
-    }
+
+    unsigned long nqwords = obj->size / 8;
+
+    __asm__ __volatile__(
+        "cld\n\t"
+        "rep movsq\n\t"
+        :
+        : "D"(new_ptr), "S"(ptr), "c"(nqwords)
+        :
+    );
     my_free(ptr);
     return new_ptr;
 
-}
-
-int main() {
-    return 0;
 }
