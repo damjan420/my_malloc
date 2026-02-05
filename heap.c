@@ -432,14 +432,16 @@ void* my_calloc(unsigned long nmemb, unsigned long size) {
 
     //2. Zero any other objects
     unsigned long qwords = total_size / 8;
+
+    void* ptr_before_inline = ptr;
     __asm__ __volatile__(
         "cld\n\t"
         "rep stosq\n\t"
-        : 
-        : "a"(0) ,"D"(ptr), "c" (qwords)
-        :
+        : "+D"(ptr), "+c" (qwords)
+        : "a"(0)
+        : "memory"
     );
-    return ptr;
+    return ptr_before_inline;
 }
 
 void* my_realloc(void* ptr, unsigned long new_size) {
@@ -474,13 +476,14 @@ void* my_realloc(void* ptr, unsigned long new_size) {
 
     unsigned long nqwords = obj->size / 8;
 
+    void* new_ptr_before_inline = new_ptr;
     __asm__ __volatile__(
         "cld\n\t"
         "rep movsq\n\t"
+        : "+D"(new_ptr), "+S"(ptr), "+c"(nqwords)
         :
-        : "D"(new_ptr), "S"(ptr), "c"(nqwords)
-        :
+        : "memory"
     );
     my_free(ptr);
-    return new_ptr;
+    return new_ptr_before_inline;
 }
